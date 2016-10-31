@@ -247,7 +247,8 @@ func newHTTP2Client(ctx context.Context, addr TargetInfo, opts ConnectOptions) (
 	// Start the reader goroutine for incoming message. Each transport has
 	// a dedicated goroutine which reads HTTP2 frame from network. Then it
 	// dispatches the frame to the corresponding stream entity.
-	go t.reader()
+	frameChan := make(chan error)
+	go t.reader(frameChan)
 	// Send connection preface to server.
 	n, err := t.conn.Write(clientPreface)
 	if err != nil {
@@ -282,6 +283,27 @@ func newHTTP2Client(ctx context.Context, addr TargetInfo, opts ConnectOptions) (
 		go t.keepalive()
 	}
 	t.writableChan <- 0
+
+	callHdr := &CallHdr{
+		Host:   "localhost",
+		Method: "GET",
+	}
+	s1, err := t.NewStream(context.Background(), callHdr)
+	if err != nil {
+		return nil, err
+	}
+	err = t.Write(s1, []byte("ping"), &Options{})
+	if err != nil {
+		return nil, err
+	}
+
+	// check if readFrame succeeded
+	err = <-frameChan
+	if err != nil {
+		close(frameChan)
+		return nil, connectionErrorf(true, err, "transport: %v", err)
+	}
+
 	return t, nil
 }
 
@@ -1037,20 +1059,25 @@ func handleMalformedHTTP2(s *Stream, err error) {
 // TODO(zhaoq): currently one reader per transport. Investigate whether this is
 // optimal.
 // TODO(zhaoq): Check the validity of the incoming frame sequence.
-func (t *http2Client) reader() {
+func (t *http2Client) reader(frameChan chan error) {
 	// Check the validity of server preface.
 	frame, err := t.framer.readFrame()
 	if err != nil {
+		// FAILS here
 		t.notifyError(err)
+		frameChan <- err
 		return
 	}
 	atomic.CompareAndSwapUint32(&t.activity, 0, 1)
 	sf, ok := frame.(*http2.SettingsFrame)
 	if !ok {
 		t.notifyError(err)
+		frameChan <- err
 		return
 	}
 	t.handleSettings(sf)
+	// readFrame succeeded, close channel and continue
+	close(frameChan)
 
 	// loop to keep reading incoming messages on this transport.
 	for {
