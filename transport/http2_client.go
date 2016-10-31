@@ -284,11 +284,10 @@ func newHTTP2Client(ctx context.Context, addr TargetInfo, opts ConnectOptions) (
 	}
 	t.writableChan <- 0
 
-	callHdr := &CallHdr{
-		Host:   "localhost",
-		Method: "GET",
-	}
-	s1, err := t.NewStream(context.Background(), callHdr)
+	s1, err := t.NewStream(context.Background(), &CallHdr{
+		Host:   t.conn.RemoteAddr().String(),
+		Method: "",
+	})
 	defer t.CloseStream(s1, nil)
 
 	if err != nil {
