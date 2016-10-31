@@ -1066,7 +1066,7 @@ func (t *http2Client) notifyError(err error) {
 	if t.state == reachable {
 		t.state = unreachable
 		close(t.errorChan)
-		grpclog.Printf("transport: http2Client.notifyError got notified that the client transport was broken %v.", err)
+		grpclog.Printf("transport: http2Client.notifyError got notified that the client transport was broken %v (target=%s).", err, t.target)
 	}
 	t.mu.Unlock()
 }
