@@ -241,6 +241,8 @@ func newHTTP2Client(ctx context.Context, addr TargetInfo, opts ConnectOptions) (
 		Method: "GET",
 	}
 	s1, err := t.NewStream(context.Background(), callHdr)
+	defer t.CloseStream(s1, nil)
+
 	if err != nil {
 		return nil, err
 	}
