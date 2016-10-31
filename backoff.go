@@ -26,6 +26,7 @@ type backoffStrategy interface {
 	// backoff returns the amount of time to wait before the next retry given
 	// the number of consecutive failures.
 	backoff(retries int) time.Duration
+	getMaxDelay() time.Duration
 }
 
 // BackoffConfig defines the parameters for the default gRPC backoff strategy.
@@ -56,6 +57,10 @@ func setDefaults(bc *BackoffConfig) {
 	if md > 0 {
 		bc.MaxDelay = md
 	}
+}
+
+func (bc BackoffConfig) getMaxDelay() time.Duration {
+	return bc.MaxDelay
 }
 
 func (bc BackoffConfig) backoff(retries int) time.Duration {

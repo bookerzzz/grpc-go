@@ -322,7 +322,7 @@ func DialContext(ctx context.Context, target string, opts ...DialOption) (conn *
 			}
 		}
 		for _, a := range addrs {
-			if err := cc.resetAddrConn(a, false, nil); err != nil {
+			if err := cc.resetAddrConn(a, false, nil, 0); err != nil {
 				waitC <- err
 				return
 			}
@@ -424,7 +424,7 @@ func (cc *ClientConn) lbWatcher() {
 		}
 		cc.mu.Unlock()
 		for _, a := range add {
-			cc.resetAddrConn(a, true, nil)
+			cc.resetAddrConn(a, true, nil, 0)
 		}
 		for _, c := range del {
 			c.tearDown(errConnDrain)
@@ -435,11 +435,13 @@ func (cc *ClientConn) lbWatcher() {
 // resetAddrConn creates an addrConn for addr and adds it to cc.conns.
 // If there is an old addrConn for addr, it will be torn down, using tearDownErr as the reason.
 // If tearDownErr is nil, errConnDrain will be used instead.
-func (cc *ClientConn) resetAddrConn(addr Address, skipWait bool, tearDownErr error) error {
+func (cc *ClientConn) resetAddrConn(addr Address, skipWait bool, tearDownErr error, retriesSoFar int) error {
 	ac := &addrConn{
-		cc:    cc,
-		addr:  addr,
-		dopts: cc.dopts,
+		cc:      cc,
+		addr:    addr,
+		dopts:   cc.dopts,
+		retries: retriesSoFar,
+		ackTime: cc.dopts.bs.getMaxDelay(),
 	}
 	ac.ctx, ac.cancel = context.WithCancel(cc.ctx)
 	ac.stateCV = sync.NewCond(&ac.mu)
@@ -613,6 +615,12 @@ type addrConn struct {
 
 	// The reason this addrConn is torn down.
 	tearDownErr error
+
+	// Number of retries so far
+	retries int
+
+	// amount of time to wait before resetting retries e.g. consider a stable connection
+	ackTime time.Duration
 }
 
 // printf records an event in ac's event log, unless ac has been closed.
@@ -668,9 +676,13 @@ func (ac *addrConn) waitForStateChange(ctx context.Context, sourceState Connecti
 }
 
 func (ac *addrConn) resetTransport(closeTransport bool) error {
-	for retries := 0; ; retries++ {
+	defer func() {
+		grpclog.Println("resetTransport() exits")
+	}()
+	for {
 		ac.mu.Lock()
-		ac.printf("connecting")
+		ac.retries++
+		ac.printf("connecting (retry %d)", ac.retries)
 		if ac.state == Shutdown {
 			// ac.tearDown(...) has been invoked.
 			ac.mu.Unlock()
@@ -687,7 +699,7 @@ func (ac *addrConn) resetTransport(closeTransport bool) error {
 		if closeTransport && t != nil {
 			t.Close()
 		}
-		sleepTime := ac.dopts.bs.backoff(retries)
+		sleepTime := ac.dopts.bs.backoff(ac.retries)
 		timeout := minConnectTimeout
 		if timeout < sleepTime {
 			timeout = sleepTime
@@ -721,11 +733,15 @@ func (ac *addrConn) resetTransport(closeTransport bool) error {
 			}
 			ac.mu.Unlock()
 			closeTransport = false
+			amtToWait := sleepTime - time.Since(connectTime)
 			select {
-			case <-time.After(sleepTime - time.Since(connectTime)):
+			case <-time.After(amtToWait):
+				grpclog.Println("retry:", ac.retries, "waited", amtToWait)
 			case <-ac.ctx.Done():
+				grpclog.Println("context is done")
 				return ac.ctx.Err()
 			}
+
 			continue
 		}
 		ac.mu.Lock()
@@ -734,6 +750,7 @@ func (ac *addrConn) resetTransport(closeTransport bool) error {
 			// ac.tearDown(...) has been invoked.
 			ac.mu.Unlock()
 			newTransport.Close()
+			grpclog.Println("exit via closing")
 			return errConnClosing
 		}
 		ac.state = Ready
@@ -754,11 +771,18 @@ func (ac *addrConn) resetTransport(closeTransport bool) error {
 // Run in a goroutine to track the error in transport and create the
 // new transport if an error happens. It returns when the channel is closing.
 func (ac *addrConn) transportMonitor() {
+	defer func() {
+		grpclog.Println("transportMonitor() exits")
+	}()
 	for {
 		ac.mu.Lock()
 		t := ac.transport
 		ac.mu.Unlock()
 		select {
+		case <-time.After(ac.ackTime):
+			// This will reset the retries in case of a stable connection
+			grpclog.Println("resetting retries")
+			ac.retries = 0
 		// This is needed to detect the teardown when
 		// the addrConn is idle (i.e., no RPC in flight).
 		case <-ac.ctx.Done():
@@ -777,9 +801,9 @@ func (ac *addrConn) transportMonitor() {
 			// In both cases, a new ac is created.
 			select {
 			case <-t.Error():
-				ac.cc.resetAddrConn(ac.addr, true, errNetworkIO)
+				ac.cc.resetAddrConn(ac.addr, true, errNetworkIO, ac.retries)
 			default:
-				ac.cc.resetAddrConn(ac.addr, true, errConnDrain)
+				ac.cc.resetAddrConn(ac.addr, true, errConnDrain, ac.retries)
 			}
 			return
 		case <-t.Error():
@@ -788,7 +812,7 @@ func (ac *addrConn) transportMonitor() {
 				t.Close()
 				return
 			case <-t.GoAway():
-				ac.cc.resetAddrConn(ac.addr, true, errNetworkIO)
+				ac.cc.resetAddrConn(ac.addr, true, errNetworkIO, ac.retries)
 				return
 			default:
 			}
