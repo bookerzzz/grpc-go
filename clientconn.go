@@ -603,6 +603,8 @@ type addrConn struct {
 
 	// The reason this addrConn is torn down.
 	tearDownErr error
+
+	retries int
 }
 
 // printf records an event in ac's event log, unless ac has been closed.
@@ -660,6 +662,7 @@ func (ac *addrConn) waitForStateChange(ctx context.Context, sourceState Connecti
 func (ac *addrConn) resetTransport(closeTransport bool) error {
 	for retries := 0; ; retries++ {
 		ac.mu.Lock()
+		ac.retries++
 		ac.printf("connecting")
 		if ac.state == Shutdown {
 			// ac.tearDown(...) has been invoked.
@@ -677,7 +680,7 @@ func (ac *addrConn) resetTransport(closeTransport bool) error {
 		if closeTransport && t != nil {
 			t.Close()
 		}
-		sleepTime := ac.dopts.bs.backoff(retries)
+		sleepTime := ac.dopts.bs.backoff(ac.retries)
 		timeout := minConnectTimeout
 		if timeout < sleepTime {
 			timeout = sleepTime
@@ -736,6 +739,8 @@ func (ac *addrConn) resetTransport(closeTransport bool) error {
 		if ac.cc.dopts.balancer != nil {
 			ac.down = ac.cc.dopts.balancer.Up(ac.addr)
 		}
+		// reset retries on successful connect
+		ac.retries = 0
 		ac.mu.Unlock()
 		return nil
 	}
@@ -807,7 +812,7 @@ func (ac *addrConn) transportMonitor() {
 }
 
 // wait blocks until i) the new transport is up or ii) ctx is done or iii) ac is closed or
-// iv) transport is in TransientFailure and there is a balancer/failfast is true.
+// iv) transport is in TransientFailure and there's no balancer/failfast is true.
 func (ac *addrConn) wait(ctx context.Context, hasBalancer, failfast bool) (transport.ClientTransport, error) {
 	for {
 		ac.mu.Lock()
