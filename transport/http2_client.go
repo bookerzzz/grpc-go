@@ -240,11 +240,11 @@ func newHTTP2Client(ctx context.Context, addr TargetInfo, opts ConnectOptions) (
 		Host:   t.conn.RemoteAddr().String(),
 		Method: "",
 	})
-	defer t.CloseStream(s1, nil)
-
 	if err != nil {
 		return nil, err
 	}
+	defer t.CloseStream(s1, nil)
+
 	err = t.Write(s1, []byte("ping"), &Options{})
 	if err != nil {
 		return nil, err
