@@ -1,6 +1,5 @@
-// +build race
-
 /*
+ *
  * Copyright 2016, Google Inc.
  * All rights reserved.
  *
@@ -32,8 +31,24 @@
  *
  */
 
-package grpc_test
+// Package tap defines the function handles which are executed on the transport
+// layer of gRPC-Go and related information. Everything here is EXPERIMENTAL.
+package tap
 
-func init() {
-	raceMode = true
+import (
+	"golang.org/x/net/context"
+)
+
+// Info defines the relevant information needed by the handles.
+type Info struct {
+	// FullMethodName is the string of grpc method (in the format of
+	// /package.service/method).
+	FullMethodName string
+	// TODO: More to be added.
 }
+
+// ServerInHandle defines the function which runs when a new stream is created
+// on the server side. Note that it is executed in the per-connection I/O goroutine(s) instead
+// of per-RPC goroutine. Therefore, users should NOT have any blocking/time-consuming
+// work in this handle. Otherwise all the RPCs would slow down.
+type ServerInHandle func(ctx context.Context, info *Info) (context.Context, error)

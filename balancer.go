@@ -35,9 +35,11 @@ package grpc
 
 import (
 	"fmt"
+	"net"
 	"sync"
 
 	"golang.org/x/net/context"
+	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/credentials"
 	"google.golang.org/grpc/grpclog"
 	"google.golang.org/grpc/naming"
@@ -59,6 +61,10 @@ type BalancerConfig struct {
 	// use to dial to a remote load balancer server. The Balancer implementations
 	// can ignore this if it does not need to talk to another party securely.
 	DialCreds credentials.TransportCredentials
+	// Dialer is the custom dialer the Balancer implementation can use to dial
+	// to a remote load balancer server. The Balancer implementations
+	// can ignore this if it doesn't need to talk to remote balancer.
+	Dialer func(context.Context, string) (net.Conn, error)
 }
 
 // BalancerGetOptions configures a Get call.
@@ -315,7 +321,7 @@ func (rr *roundRobin) Get(ctx context.Context, opts BalancerGetOptions) (addr Ad
 	if !opts.BlockingWait {
 		if len(rr.addrs) == 0 {
 			rr.mu.Unlock()
-			err = fmt.Errorf("there is no address available")
+			err = Errorf(codes.Unavailable, "there is no address available")
 			return
 		}
 		// Returns the next addr on rr.addrs for failfast RPCs.
@@ -384,6 +390,9 @@ func (rr *roundRobin) Notify() <-chan []Address {
 func (rr *roundRobin) Close() error {
 	rr.mu.Lock()
 	defer rr.mu.Unlock()
+	if rr.done {
+		return errBalancerClosed
+	}
 	rr.done = true
 	if rr.w != nil {
 		rr.w.Close()
